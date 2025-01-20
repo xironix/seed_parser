@@ -1,49 +1,91 @@
-Python 3.x program performs a recursive search for secret phrases from crypto wallets inside files, checks their validity (i.e. prints only those phrases that comply with the bip39 standard) and displays the passphrase and the path to the file in which it was found. Validation of phrases for compliance with the bip39 standard is performed using the library from the repository of the trezor hardware crypto wallet https://github.com/trezor/python-mnemonic
+# Seed Phrase Extractor
 
-Sample program output: /home/zzzzz/zzzzzz/Files/wallety/New text document.txt 
+## 🔍 Description
+
+This Python 3.x program performs a recursive search for secret phrases from crypto wallets inside files. It checks their validity (i.e., prints only those phrases that comply with the BIP39 standard) and displays the passphrase along with the path to the file in which it was found. 
+
+Validation of phrases for compliance with the BIP39 standard is performed using the library from the repository of the Trezor hardware crypto wallet. 
+🔗 [trezor/python-mnemonic](https://github.com/trezor/python-mnemonic)
+
+---
+
+## 🖥 Sample Output
+
+```
+/home/zzzzz/zzzzzz/Files/wallety/New text document.txt
 rude cool annual mango hazard stable affair payment kingdom naive crush cancel
 
-/home/zzzzz/zzzzzz/Files/wallety/tron.txt 
+/home/zzzzz/zzzzzz/Files/wallety/tron.txt
 awake window awful off hero coach salmon deer medal bleak crisp noodle
 
-/home/zzzzzzz/FileGrabber/Users/aliraza/Documents/atomic backup pharse wallet.txt 
+/home/zzzzzzz/FileGrabber/Users/aliraza/Documents/atomic backup pharse wallet.txt
 focus city expand planet upon power stick begin usual cereal spring damage
 
-/home/zzzzzzz/FileGrabber/Users/tunas/Desktop/torrrez codes.txt 
+/home/zzzzzzz/FileGrabber/Users/tunas/Desktop/torrrez codes.txt
 sketch swift bronze stadium monster agent office error lock spare split frown
 
-/home/zzzzz/zzzzzz/Files/wallety/ark wallet.txt 
+/home/zzzzz/zzzzzz/Files/wallety/ark wallet.txt
 rude cool annual mango hazard stable affair payment kingdom naive crush cancel
+```
 
-Installation start 
+---
 
-1.It is necessary to download and install python from the site https://www.python.org/ of the version not lower than 3.8 
-2.At the beginning of the Python installation, select the checkboxes "Install Launcher for all users" and "Add Python3.8 to patch" 
-3.At the end of the installation select "Disable Patch length limit" 
-4.Install build tools https://visualstudio.microsoft.com/visual-cpp-build-tools/ https://prnt.sc/XUQAJLvWtrU- 
-5. After completing the above points, you need to run the installation of the python libraries "install_libs"
+## 🛠 Installation
 
+1. Download and install **Python 3.8+** from (https://www.python.org/).  
+2. During installation, select the checkboxes:  
+   - ✅ "Install Launcher for all users"  
+   - ✅ "Add Python3.8 to PATH"  
+3. At the end of installation, select:  
+   - ✅ "Disable PATH length limit"  
+4. Install **Visual C++ Build Tools** from (https://visualstudio.microsoft.com/visual-cpp-build-tools/).  
+   - [Installation Guide](https://prnt.sc/XUQAJLvWtrU-)  
+5. After completing the above steps, run :  
 
+   ```
+   install_libs.cmd
+   ```
 
-Let's start setting up the script seed_parser_v*.py. All settings are here.
+---
 
+## ⚙ Configuration
 
-SOURCE_DIR = 'd:/__dd2/' The path to the logs is indicated here. If you use this program on Windows, you need to use such slashes /
+Edit `seed_parser_v*.py` and modify the following settings as needed:
 
+```python
+SOURCE_DIR = 'd:/__dd2/'  # Path to logs (use '/' for Windows)
 
-PARCE_ETH=False - enables or disables (if set to False) parsing of ether private keys. If you are going to enable this, set up exclusion files and folders, because there will be a lot of garbage to collect
+PARCE_ETH = False  # Enable/disable Ethereum private key extraction
+                   # If enabled, set up exclusion files/folders to avoid excessive garbage
 
+BAD_DIRS = ['ololololz']  # List of folders to ignore
 
-BAD_DIRS=[ 'ololololz' ] Bad folders (if you often come across a folder with some kind of garbage, then it can be blacklisted and apache with that name will not be scanned).
+BAD_FILES = ['ololololo']  # List of files to ignore
 
+WORDS_CHAIN_SIZES = {12, 15, 18, 24}  # Supported seed phrase lengths
 
-BAD_FILES=[ 'ololololo' ] Bad files (if you often come across files with some kind of garbage, then they can be blacklisted and files with that name will not be scanned)
+EXWORDS = 2  # Filters out non-unique phrases (phrases with more than 2 repeated words)
+```
 
+---
 
-WORDS_CHAIN_SIZES = {12, 15, 18, 24} Here you can specify the length of the phrases to be searched. I advise you to leave all supported
+## 🚀 Running the Script
 
+To execute the script, use `run.bat`.  
 
-EXWORDS=2 The filter is necessary so that only unique phrases are displayed (all phrases where more than 2 words are repeated will be skipped, such phrases do not exist, I advise you not to change)
+1. Open the script directory in the terminal:  
 
+   ```
+   cd C:\Users\administrator\Desktop\seed_parser_v2.2
+   ```
 
-Once configured, you can start running. Run.bat will make things easier. In the line cd C:\Users\khuram\Desktop[By SeedHunter]seed_parser paste the link to the folder with the script. by clicking on run.bat run the script
+2. Run the script:  
+
+   ```
+   run.bat
+   ```
+
+---
+
+📌 **Ensure all necessary dependencies are installed before running the script!**
+
