@@ -15,14 +15,42 @@ from mnemonic import Mnemonic
 import signal
 import threading
 from contextlib import contextmanager
+from rich.console import Console
+from rich.logging import RichHandler
+from rich.progress import (
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    BarColumn,
+    TaskProgressColumn,
+    TimeRemainingColumn,
+)
+from rich.panel import Panel
+from rich.table import Table
+from rich.live import Live
+import time
+from collections import Counter
 
 from seed_parser.wallet import *
+
+# Initialize rich console
+console = Console()
 
 # Configuration
 PARSE_ETH = False  # Fixed typo from PARCE to PARSE
 LOG_DIR = Path('./logs')
 BASE_DIR = Path(__file__).parent / 'data'  # Updated to point to package data directory
 SOURCE_DIR = Path('D:/')  # Configurable via CLI
+
+# Statistics tracking
+stats = {
+    'files_processed': 0,
+    'bytes_processed': 0,
+    'phrases_found': 0,
+    'eth_keys_found': 0,
+    'errors': 0
+}
+stats_lock = threading.Lock()
 
 # File filtering configuration
 BAD_EXTENSIONS: Set[str] = {
@@ -38,26 +66,24 @@ BAD_FILES: List[str] = [
     'ololololo'  # Add more as needed
 ]
 
-ENABLE_LANG: List[str] = [
-    'english', 'chinese_simplified', 'chinese_traditional',
-    'french', 'italian', 'japanese', 'korean',
-    'portuguese', 'spanish'
-]
+ENABLE_LANG: List[str] = ['english']  # hdwallet only supports English mnemonics
 
 WORDS_CHAIN_SIZES: Set[int] = {12, 15, 18, 24}
 EXWORDS: int = 2
 CHUNK_SIZE: int = 1024 * 1024  # 1MB chunks for file reading
 
-# Set up logging
+# Set up logging with rich handler
+LOG_DIR.mkdir(exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(LOG_DIR / 'parser.log')
-    ]
+    format="%(message)s",
+    datefmt="[%X]",
+    handlers=[RichHandler(rich_tracebacks=True)]
 )
 logger = logging.getLogger(__name__)
+
+# Initialize mnemonic validator
+MNEMONIC_VALIDATOR = Mnemonic("english")
 
 class DBController:
     def __init__(self, in_memory: bool = False) -> None:
@@ -70,6 +96,8 @@ class DBController:
         
         self.conn.execute("PRAGMA journal_mode=WAL")  # Better concurrent access
         self.conn.execute("PRAGMA synchronous=NORMAL")  # Better performance
+        self.conn.execute("CREATE TABLE IF NOT EXISTS phrases (phrase VARCHAR(500) PRIMARY KEY, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_phrases_created ON phrases(created_at)")
         self._lock = threading.Lock()
         self.batch_size = 1000
         self.phrase_buffer: List[str] = []
@@ -85,17 +113,6 @@ class DBController:
                 self.conn.rollback()
                 logger.error(f"Database transaction failed: {e}")
                 raise
-
-    def create_tables(self) -> None:
-        """Create necessary database tables."""
-        with self.transaction():
-            self.conn.executescript("""
-                CREATE TABLE IF NOT EXISTS phrases (
-                    phrase VARCHAR(500) PRIMARY KEY,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE INDEX IF NOT EXISTS idx_phrases_created ON phrases(created_at);
-            """)
 
     def insert_phrase(self, phrase: str) -> None:
         """Insert a phrase into the database with batching."""
@@ -132,6 +149,26 @@ class DBController:
         except Exception as e:
             logger.error(f"Error closing database connection: {e}")
 
+def update_stats(key: str, value: int = 1) -> None:
+    """Thread-safe update of statistics."""
+    with stats_lock:
+        stats[key] += value
+
+def create_stats_table() -> Table:
+    """Create a rich table for statistics display."""
+    table = Table(title="Scan Statistics", show_header=True)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", justify="right", style="green")
+    
+    with stats_lock:
+        table.add_row("Files Processed", str(stats['files_processed']))
+        table.add_row("Data Processed", f"{stats['bytes_processed'] / 1024 / 1024:.2f} MB")
+        table.add_row("Phrases Found", str(stats['phrases_found']))
+        table.add_row("ETH Keys Found", str(stats['eth_keys_found']))
+        table.add_row("Errors", str(stats['errors']), style="red")
+    
+    return table
+
 def valid_phrase(words: List[str]) -> bool:
     """Validate if a phrase meets the word repetition criteria."""
     if EXWORDS == 0:
@@ -163,6 +200,13 @@ def get_phrase_arr(raw: List[str]) -> List[List[str]]:
                 phrase_arr.append(p)
     return phrase_arr
 
+def validate_mnemonic(mnemonic: str) -> bool:
+    """Validate a mnemonic phrase."""
+    try:
+        return MNEMONIC_VALIDATOR.check(mnemonic)
+    except Exception:
+        return False
+
 def find_in_file(path: str, log_lock: RLock, log_files: Dict[str, str]) -> None:
     """Process a single file looking for seed phrases."""
     try:
@@ -172,12 +216,14 @@ def find_in_file(path: str, log_lock: RLock, log_files: Dict[str, str]) -> None:
 
         # Read file in chunks to handle large files
         words_chain: List[str] = []
-        lang = ''
         db = DBController()
+        file_size = file_path.stat().st_size
         
         with open(file_path, 'rb') as f:
             while chunk := f.read(CHUNK_SIZE):
                 try:
+                    update_stats('bytes_processed', len(chunk))
+                    
                     # Try different encodings
                     for encoding in ('UTF-8', 'CP437', 'ISO-8859-1'):
                         try:
@@ -189,44 +235,34 @@ def find_in_file(path: str, log_lock: RLock, log_files: Dict[str, str]) -> None:
                         continue  # Skip if no encoding works
 
                     # Process words in the chunk
-                    for match in re.finditer('[a-z]+', data, re.I):
-                        word = match.group(0)
-                        
-                        if not words_chain:
-                            # Try to start a new chain
-                            for k, word_data in words_arr.items():
-                                if word in word_data['words']:
-                                    words_chain.append(word)
-                                    lang = k
-                                    break
-                            continue
-
-                        if word in words_arr[lang]['words']:
+                    for word in re.finditer(r'\b[a-z]+\b', data.lower()):
+                        word = word.group(0)
+                        # Only add words that could be part of a BIP39 mnemonic
+                        if 3 <= len(word) <= 8:  # BIP39 words are typically 3-8 characters
                             words_chain.append(word)
-                            continue
-
-                        # Process completed chains
-                        process_word_chain(words_chain, lang, path, db, log_lock, log_files)
-                        words_chain = []
+                        
+                        # Process chain when it reaches maximum size
+                        if len(words_chain) >= max(WORDS_CHAIN_SIZES):
+                            process_word_chain(words_chain, path, db, log_lock, log_files)
+                            words_chain = words_chain[1:]  # Keep a sliding window
 
                     # Process any remaining chain
-                    if words_chain:
-                        process_word_chain(words_chain, lang, path, db, log_lock, log_files)
-
-                    # Parse ETH addresses if enabled
-                    if PARSE_ETH:
-                        process_eth_addresses(data, path, log_lock, log_files)
+                    if len(words_chain) >= min(WORDS_CHAIN_SIZES):
+                        process_word_chain(words_chain, path, db, log_lock, log_files)
 
                 except Exception as e:
                     logger.error(f"Error processing chunk in {path}: {e}")
+                    update_stats('errors')
                     continue
+
+        update_stats('files_processed')
 
     except Exception as e:
         logger.error(f"Error processing file {path}: {e}")
+        update_stats('errors')
 
 def process_word_chain(
     words_chain: List[str],
-    lang: str,
     path: str,
     db: DBController,
     log_lock: RLock,
@@ -236,31 +272,39 @@ def process_word_chain(
     if not words_chain:
         return
 
-    mnemo = words_arr[lang]['mnemo']
     for phrase in get_phrase_arr(words_chain):
         words_str = ' '.join(phrase)
         if not valid_phrase(phrase):
             continue
 
-        if not mnemo.check(words_str) or db.phrase_in_db(words_str):
+        if not validate_mnemonic(words_str) or db.phrase_in_db(words_str):
             continue
 
         try:
             full_log, coin_log = print_wallets_bip(words_str)
             db.insert_phrase(words_str)
+            update_stats('phrases_found')
             
-            log_entry = f"{path}\n{words_str}\n{full_log}"
-            logger.info(log_entry)
-
-            if log_files['SEED_LOG']:
-                with log_lock:
-                    write_log(f"{lang}_{log_files['SEED_LOG']}", words_str)
-                    write_log(log_files['SEED_LOG'], words_str)
-                    write_log(log_files['FULL_LOG'], log_entry)
-                    for coin, addresses in coin_log.items():
-                        write_log(f"{coin}{log_files['ADDR_log']}", '\n'.join(addresses))
+            with log_lock:
+                write_log('found.log', f"File: {path}")
+                write_log('found.log', f"Phrase: {words_str}")
+                write_log('found.log', full_log)
+                write_log('found.log', "-" * 80)
+                
+                for coin, addresses in coin_log.items():
+                    if coin in log_files:
+                        write_log(log_files[coin], f"File: {path}")
+                        write_log(log_files[coin], f"Phrase: {words_str}")
+                        for addr in addresses:
+                            write_log(log_files[coin], addr)
+                        write_log(log_files[coin], "-" * 80)
+                
+                # Print to console with color
+                console.print(f"[green]Found seed phrase in:[/green] [cyan]{path}[/cyan]")
+                console.print(f"[yellow]Phrase:[/yellow] {words_str}")
         except Exception as e:
-            logger.error(f"Error processing phrase '{words_str}': {e}")
+            logger.error(f"Error processing phrase from {path}: {e}")
+            update_stats('errors')
 
 def process_eth_addresses(
     data: str,
@@ -273,6 +317,8 @@ def process_eth_addresses(
         try:
             private_key = match[1]
             address = ext_addr(private_key)
+            update_stats('eth_keys_found')
+            
             log_entry = (
                 f"{path}\n"
                 f"ETH-Privkey:{private_key}\n"
@@ -285,8 +331,13 @@ def process_eth_addresses(
                     write_log(log_files['ETH_FULL_LOG'], log_entry)
                     write_log(log_files['ETH_A_LOG'], address)
                     write_log(log_files['ETH_P_LOG'], f"{address}:{private_key}")
+                    
+                    # Print to console with color
+                    console.print(f"[green]Found ETH key in:[/green] [cyan]{path}[/cyan]")
+                    console.print(f"[yellow]Address:[/yellow] {address}")
         except Exception as e:
             logger.error(f"Error processing ETH address: {e}")
+            update_stats('errors')
 
 def thread_fun(
     directory: str,
@@ -294,30 +345,7 @@ def thread_fun(
     log_files: Dict[str, str]
 ) -> str:
     """Worker function for processing directories."""
-    global words_arr
-    words_arr = {}
-    
     try:
-        # Initialize word lists
-        wordlist_dir = BASE_DIR / 'wordlist'
-        
-        if 'english' in ENABLE_LANG:
-            with open(wordlist_dir / 'english.txt', 'r', encoding='utf-8') as f:
-                words_arr['english'] = {
-                    'words': set(f.read().splitlines()),
-                    'mnemo': Mnemonic("english")
-                }
-
-        other_dir = wordlist_dir / 'Other'
-        for lang_file in other_dir.glob('*.txt'):
-            lang = lang_file.stem
-            if lang in ENABLE_LANG:
-                with open(lang_file, 'r', encoding='utf-8') as f:
-                    words_arr[lang] = {
-                        'words': set(f.read().splitlines()),
-                        'mnemo': Mnemonic(f"Other/{lang}")
-                    }
-
         # Process files in directory
         dir_path = Path(directory)
         for item in dir_path.rglob('*'):
@@ -337,9 +365,11 @@ def thread_fun(
                 find_in_file(str(item), log_lock, log_files)
             except Exception as e:
                 logger.error(f"Error processing file {item}: {e}")
+                update_stats('errors')
 
     except Exception as e:
         logger.error(f"Error in thread processing directory {directory}: {e}")
+        update_stats('errors')
     
     return directory
 
@@ -364,6 +394,13 @@ def validate_directory(directory: Path) -> None:
 
 def main() -> None:
     """Main entry point for the seed phrase parser."""
+    # Show startup banner
+    console.print(Panel.fit(
+        "[bold green]Cryptocurrency Seed Phrase Parser[/bold green]\n"
+        "[yellow]A high-performance tool for finding and validating cryptocurrency wallets[/yellow]",
+        border_style="blue"
+    ))
+
     parser = argparse.ArgumentParser(
         description='Cross-platform cryptocurrency seed phrase and private key extractor',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -425,9 +462,8 @@ For more information, visit: https://github.com/yourusername/seed_parser
             args.threads = mp.cpu_count() * 2
 
         # Initialize database
-        db = DBController(in_memory=args.memory_db)
         try:
-            db.create_tables()
+            db = DBController(in_memory=args.memory_db)
         except sqlite3.Error as e:
             logger.error(f"Failed to initialize database: {e}")
             sys.exit(1)
@@ -452,18 +488,46 @@ For more information, visit: https://github.com/yourusername/seed_parser
 
             params = [(str(d), log_lock, log_files) for d in directories]
             
-            logger.info(f"Starting scan with {args.threads} threads...")
-            logger.info(f"Scanning directory: {source_dir}")
-            logger.info(f"Found {len(directories)} directories to process")
+            console.print(f"[bold cyan]Starting scan with {args.threads} threads...[/bold cyan]")
+            console.print(f"[cyan]Scanning directory:[/cyan] {source_dir}")
+            console.print(f"[cyan]Found {len(directories)} directories to process[/cyan]")
             
-            results = work_pool.starmap(thread_fun, params)
+            # Create progress display
+            progress = Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                TimeRemainingColumn(),
+                expand=True,
+                transient=True  # Allow the progress bar to be part of other displays
+            )
+
+            # Create a layout that combines progress and stats
+            def make_layout():
+                layout = Table.grid(expand=True)
+                layout.add_row(progress)
+                layout.add_row(create_stats_table())
+                return layout
+
+            # Create the progress task before entering Live context
+            scan_task = progress.add_task(
+                "[cyan]Scanning directories...", 
+                total=len(directories)
+            )
+
+            # Single Live display for both progress and stats
+            with Live(make_layout(), console=console, refresh_per_second=1):
+                for i, result in enumerate(work_pool.starmap(thread_fun, params)):
+                    progress.update(scan_task, advance=1)
+                    # No need to manually update layout, Live will refresh automatically
             
-            logger.info(f"Scan completed. Processed {len(results)} directories:")
-            for r in results:
-                logger.info(f"- {r}")
+            # Show final statistics
+            console.print("\n[bold green]Scan completed![/bold green]")
+            console.print(create_stats_table())
             
         except KeyboardInterrupt:
-            logger.info("\nReceived interrupt signal, cleaning up...")
+            console.print("\n[yellow]Received interrupt signal, cleaning up...[/yellow]")
             work_pool.terminate()
         except Exception as e:
             logger.error(f"Error during processing: {e}")
@@ -472,7 +536,6 @@ For more information, visit: https://github.com/yourusername/seed_parser
             work_pool.close()
             work_pool.join()
             db.flush_buffer()  # Ensure all phrases are written
-            Mnemonic.free_sources()
 
     except (FileNotFoundError, NotADirectoryError, PermissionError) as e:
         logger.error(str(e))
@@ -486,9 +549,8 @@ For more information, visit: https://github.com/yourusername/seed_parser
 
 def signal_handler(signum: int, frame) -> None:
     """Handle interrupt signals gracefully."""
-    logger.info("\nReceived shutdown signal. Cleaning up...")
+    console.print("\n[yellow]Received shutdown signal. Cleaning up...[/yellow]")
     try:
-        Mnemonic.free_sources()
         sys.exit(0)
     except Exception as e:
         logger.error(f"Error during cleanup: {e}")
