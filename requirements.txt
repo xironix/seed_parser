@@ -1,4 +1,0 @@
-bip_utils>=2.7.0
-mnemonic>=0.20
-blocksmith>=1.2.0
-requests>=2.31.0 
