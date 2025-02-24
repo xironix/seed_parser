@@ -1,4 +1,3 @@
-
 from bip_utils import Bip39MnemonicValidator, Bip39SeedGenerator,Bip39MnemonicGenerator, Bip44, Bip44Coins, Bip44Changes,Bip32Secp256k1,Bip49Coins,Bip84Coins
 from bip_utils.bip.conf.bip44 import Bip44Ethereum
 from bip_utils import Bip49,Bip84
@@ -6,6 +5,9 @@ from mnemonic import *
 from bip_utils import WifDecoder, WifEncoder
 from bip_utils import Bip44PublicKey, Bip44PrivateKey
 import blocksmith
+from typing import Dict, List, Tuple
+import binascii
+from blocksmith import KeyPair
 
 def generate_wallets_bip(mnemonic):
     #assert Bip39MnemonicValidator(mnemonic).Validate() #is_mnemonic(mnemonic=MNEMONIC, language=LANGUAGE)
@@ -164,79 +166,60 @@ def generate_wallets_bip(mnemonic):
 
     return bitcoin_result,eth_result,altcoin_result,altcoin2_result
 
-def print_wallets_bip(phrase):
-    bitcoin_result, eth_result, altcoin_result, altcoin2_result=generate_wallets_bip(phrase)
-    full_res=''
-    coin_log={}
-    for coin in bitcoin_result:
-        #print(coin.upper())
-        coin_log[coin] = []
-        full_res += coin.upper() + f'\n'
-        for acc in bitcoin_result[coin]:
-            full_res += f'ACC={acc}\n'
-            p2pkh_res = ''
-            p2sh_res = ''
-            p2wkh_res = ''
+def print_wallets_bip(seed_phrase: str) -> Tuple[str, Dict[str, List[str]]]:
+    """Generate wallet addresses from a seed phrase."""
+    # Generate seed from mnemonic
+    seed_bytes = Bip39SeedGenerator(seed_phrase).Generate()
+    
+    # Initialize coin handlers
+    bip44_mst_ctx = Bip44.FromSeed(seed_bytes, Bip44Coins.BITCOIN)
+    bip49_mst_ctx = Bip49.FromSeed(seed_bytes, Bip44Coins.BITCOIN)
+    bip84_mst_ctx = Bip84.FromSeed(seed_bytes, Bip44Coins.BITCOIN)
+    
+    # Generate addresses
+    addresses = []
+    coin_addresses: Dict[str, List[str]] = {}
+    
+    # BIP44 addresses (Legacy)
+    for i in range(5):
+        bip44_acc_ctx = bip44_mst_ctx.Purpose().Coin().Account(0)
+        bip44_chg_ctx = bip44_acc_ctx.Change(Bip44Changes.CHAIN_EXT)
+        bip44_addr_ctx = bip44_chg_ctx.AddressIndex(i)
+        addr = bip44_addr_ctx.PublicKey().ToAddress()
+        addresses.append(f"BIP44 {i}: {addr}")
+        coin_addresses.setdefault("BTC44", []).append(addr)
+    
+    # BIP49 addresses (SegWit-Compatible)
+    for i in range(5):
+        bip49_acc_ctx = bip49_mst_ctx.Purpose().Coin().Account(0)
+        bip49_chg_ctx = bip49_acc_ctx.Change(Bip44Changes.CHAIN_EXT)
+        bip49_addr_ctx = bip49_chg_ctx.AddressIndex(i)
+        addr = bip49_addr_ctx.PublicKey().ToAddress()
+        addresses.append(f"BIP49 {i}: {addr}")
+        coin_addresses.setdefault("BTC49", []).append(addr)
+    
+    # BIP84 addresses (Native SegWit)
+    for i in range(5):
+        bip84_acc_ctx = bip84_mst_ctx.Purpose().Coin().Account(0)
+        bip84_chg_ctx = bip84_acc_ctx.Change(Bip44Changes.CHAIN_EXT)
+        bip84_addr_ctx = bip84_chg_ctx.AddressIndex(i)
+        addr = bip84_addr_ctx.PublicKey().ToAddress()
+        addresses.append(f"BIP84 {i}: {addr}")
+        coin_addresses.setdefault("BTC84", []).append(addr)
+    
+    # Generate Ethereum addresses
+    eth_seed = binascii.hexlify(seed_bytes).decode('utf-8')
+    key_pair = KeyPair(eth_seed)
+    eth_address = key_pair.address()
+    addresses.append(f"ETH: {eth_address}")
+    coin_addresses["ETH"] = [eth_address]
+    
+    return "\n".join(addresses), coin_addresses
 
-            for item in bitcoin_result[coin][acc]:
-                p2pkh_res+=f"{coin}_address:{item['p2pkh']}\n{coin}_privatekey:{item['wif']}\n"
-                p2sh_res += f"{coin}_address:{item['p2sh']}\n{coin}_privatekey:{item['wif']}\n"
-                p2wkh_res+=f"{coin}_address:{item['p2wkh']}\n{coin}_privatekey:{item['wif']}\n"
-                coin_log[coin].extend([item['p2pkh'],item['p2sh'],item['p2wkh']])
-
-            full_res+=f'P2PKH:\n{p2pkh_res}\n' \
-                      f'P2SH:\n{p2sh_res}\n' \
-                      f'P2WKH:\n{p2wkh_res}\n{"-"*24}\n'
-
-
-    for coin in eth_result:
-        #print(coin)
-        t=coin.replace('/','_')
-        coin_log[t]=[]
-        full_res+=coin+'\n'
-        for acc in eth_result[coin]:
-            full_res += f'ACC={acc}\n'
-            p2pkh_res=''
-            for item in eth_result[coin][acc]:
-                p2pkh_res+=f"{coin}_address:{item['EthAddr']}\n{coin}_privatekey:{item['private_key']}\n"
-                coin_log[t].append(item['EthAddr'])
-            #print(p2pkh_res)
-            #print('\n')
-            full_res+=f'{p2pkh_res}\n{"-"*24}\n'
-
-
-    for coin in altcoin_result:
-        #print(coin.upper())
-        coin_log[coin]=[]
-        full_res+=coin.upper()+'\n'
-        for acc in altcoin_result[coin]:
-            full_res += f'ACC={acc}\n'
-            p2pkh_res=''
-            for item in altcoin_result[coin][acc]:
-                p2pkh_res+=f"{coin}_address:{item['p2pkh']}\n{coin}_privatekey:{item['wif']}\n"
-                coin_log[coin].append(item['p2pkh'])
-
-            full_res+=f'{p2pkh_res}\n{"-"*24}\n'
-
-    for coin in altcoin2_result:
-        #print(coin.upper())
-        coin_log[coin]=[]
-        full_res+=coin.upper()+'\n'
-        p2pkh_res=''
-        for item in altcoin2_result[coin]:
-            p2pkh_res += f"{coin}_address:{item['p2pkh']}\n{coin}_privatekey:{item['wif']}\n"
-            #p2pkh_res+=f"{coin}_address:{item['p2pkh']}\n"
-            coin_log[coin].append(item['p2pkh'])
-
-        #print(p2pkh_res)
-        #print('\n')
-        full_res+=f'{p2pkh_res}\n{"-"*24}\n'
-    return full_res,coin_log
-
-def ext_addr(pk):
-    address = blocksmith.EthereumWallet.generate_address(pk)
-    exclude_pattern2(f'{address}:{pk}')
-    return address
+def ext_addr(private_key: str) -> str:
+    """Extract Ethereum address from private key."""
+    key_pair = KeyPair(private_key=private_key)
+    return key_pair.address()
 
 
 

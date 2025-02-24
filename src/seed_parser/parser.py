@@ -9,18 +9,19 @@ import re
 import sys
 import argparse
 import multiprocessing as mp
+from multiprocessing.synchronize import RLock
 from typing import Dict, List, Optional, Set, Tuple
 from mnemonic import Mnemonic
 import signal
 import threading
 from contextlib import contextmanager
 
-from gen_wallet import *
+from seed_parser.wallet import *
 
 # Configuration
 PARSE_ETH = False  # Fixed typo from PARCE to PARSE
 LOG_DIR = Path('./logs')
-BASE_DIR = Path(__file__).parent.absolute()
+BASE_DIR = Path(__file__).parent / 'data'  # Updated to point to package data directory
 SOURCE_DIR = Path('D:/')  # Configurable via CLI
 
 # File filtering configuration
@@ -162,7 +163,7 @@ def get_phrase_arr(raw: List[str]) -> List[List[str]]:
                 phrase_arr.append(p)
     return phrase_arr
 
-def find_in_file(path: str, log_lock: mp.synchronize.RLock, log_files: Dict[str, str]) -> None:
+def find_in_file(path: str, log_lock: RLock, log_files: Dict[str, str]) -> None:
     """Process a single file looking for seed phrases."""
     try:
         file_path = Path(path)
@@ -228,7 +229,7 @@ def process_word_chain(
     lang: str,
     path: str,
     db: DBController,
-    log_lock: mp.synchronize.RLock,
+    log_lock: RLock,
     log_files: Dict[str, str]
 ) -> None:
     """Process a chain of words for potential seed phrases."""
@@ -264,7 +265,7 @@ def process_word_chain(
 def process_eth_addresses(
     data: str,
     path: str,
-    log_lock: mp.synchronize.RLock,
+    log_lock: RLock,
     log_files: Dict[str, str]
 ) -> None:
     """Process potential Ethereum addresses in the data."""
@@ -289,7 +290,7 @@ def process_eth_addresses(
 
 def thread_fun(
     directory: str,
-    log_lock: mp.synchronize.RLock,
+    log_lock: RLock,
     log_files: Dict[str, str]
 ) -> str:
     """Worker function for processing directories."""
@@ -342,6 +343,25 @@ def thread_fun(
     
     return directory
 
+def validate_directory(directory: Path) -> None:
+    """Validate the input directory and raise appropriate exceptions."""
+    try:
+        if not directory.exists():
+            raise FileNotFoundError(f"Directory does not exist: {directory}")
+        if not directory.is_dir():
+            raise NotADirectoryError(f"Path exists but is not a directory: {directory}")
+        if not os.access(directory, os.R_OK):
+            raise PermissionError(f"No read permission for directory: {directory}")
+        
+        # Check if directory is empty
+        try:
+            next(directory.iterdir())
+        except StopIteration:
+            raise ValueError(f"Directory is empty: {directory}")
+    except Exception as e:
+        # Catch any other potential errors during validation
+        raise ValueError(f"Error validating directory {directory}: {str(e)}")
+
 def main() -> None:
     """Main entry point for the seed phrase parser."""
     parser = argparse.ArgumentParser(
@@ -369,68 +389,100 @@ For more information, visit: https://github.com/yourusername/seed_parser
 
     args = parser.parse_args()
 
-    # Create logs directory
-    LOG_DIR.mkdir(exist_ok=True)
+    try:
+        # Create logs directory
+        LOG_DIR.mkdir(exist_ok=True, mode=0o700)  # Secure permissions for logs
 
-    # Initialize logging
-    log_files = {}
-    if args.write_logs:
-        timestamp = datetime.datetime.now().strftime('%d-%m-%Y_%H-%M-%S')
-        log_files = {
-            'SEED_LOG': f'seed-{timestamp}.txt',
-            'ADDR_log': f'-addresses-{timestamp}.txt',
-            'FULL_LOG': f'full-log-{timestamp}.txt',
-            'ETH_FULL_LOG': f'eth-full-log-{timestamp}.txt',
-            'ETH_A_LOG': f'eth-a-log-{timestamp}.txt',
-            'ETH_P_LOG': f'eth-p-log-{timestamp}.txt'
-        }
-    else:
-        log_files = dict.fromkeys(
-            ['SEED_LOG', 'ADDR_log', 'FULL_LOG', 'ETH_FULL_LOG', 'ETH_A_LOG', 'ETH_P_LOG']
+        # Set up logging before anything else
+        if args.write_logs:
+            timestamp = datetime.datetime.now().strftime('%d-%m-%Y_%H-%M-%S')
+            log_files = {
+                'SEED_LOG': f'seed-{timestamp}.txt',
+                'ADDR_log': f'-addresses-{timestamp}.txt',
+                'FULL_LOG': f'full-log-{timestamp}.txt',
+                'ETH_FULL_LOG': f'eth-full-log-{timestamp}.txt',
+                'ETH_A_LOG': f'eth-a-log-{timestamp}.txt',
+                'ETH_P_LOG': f'eth-p-log-{timestamp}.txt'
+            }
+        else:
+            log_files = dict.fromkeys(
+                ['SEED_LOG', 'ADDR_log', 'FULL_LOG', 'ETH_FULL_LOG', 'ETH_A_LOG', 'ETH_P_LOG']
+            )
+
+        # Validate source directory
+        source_dir = Path(args.directory).resolve()
+        validate_directory(source_dir)
+        
+        # Validate thread count
+        if args.threads < 1:
+            logger.warning(f"Invalid thread count {args.threads}, using 1 thread")
+            args.threads = 1
+        elif args.threads > mp.cpu_count() * 2:
+            logger.warning(
+                f"Thread count {args.threads} is more than 2x CPU count, "
+                f"limiting to {mp.cpu_count() * 2} threads"
+            )
+            args.threads = mp.cpu_count() * 2
+
+        # Initialize database
+        db = DBController(in_memory=args.memory_db)
+        try:
+            db.create_tables()
+        except sqlite3.Error as e:
+            logger.error(f"Failed to initialize database: {e}")
+            sys.exit(1)
+
+        # Set up multiprocessing
+        manager = mp.Manager()
+        log_lock = manager.RLock()
+        
+        # Configure process pool with maxtasksperchild to prevent memory leaks
+        work_pool = mp.Pool(
+            processes=args.threads,
+            maxtasksperchild=100  # Restart workers periodically to prevent memory leaks
         )
 
-    # Set up source directory
-    source_dir = Path(args.directory)
-    if not source_dir.exists():
-        logger.error(f"Error: Source directory {source_dir} does not exist")
+        try:
+            # Process directories
+            directories = [d for d in source_dir.iterdir() if d.is_dir()]
+            if not directories:
+                logger.warning(f"No subdirectories found in {source_dir}")
+                # Still process the root directory itself
+                directories = [source_dir]
+
+            params = [(str(d), log_lock, log_files) for d in directories]
+            
+            logger.info(f"Starting scan with {args.threads} threads...")
+            logger.info(f"Scanning directory: {source_dir}")
+            logger.info(f"Found {len(directories)} directories to process")
+            
+            results = work_pool.starmap(thread_fun, params)
+            
+            logger.info(f"Scan completed. Processed {len(results)} directories:")
+            for r in results:
+                logger.info(f"- {r}")
+            
+        except KeyboardInterrupt:
+            logger.info("\nReceived interrupt signal, cleaning up...")
+            work_pool.terminate()
+        except Exception as e:
+            logger.error(f"Error during processing: {e}")
+            raise
+        finally:
+            work_pool.close()
+            work_pool.join()
+            db.flush_buffer()  # Ensure all phrases are written
+            Mnemonic.free_sources()
+
+    except (FileNotFoundError, NotADirectoryError, PermissionError) as e:
+        logger.error(str(e))
         sys.exit(1)
-
-    # Initialize database
-    db = DBController(in_memory=args.memory_db)
-    db.create_tables()
-
-    # Set up multiprocessing
-    manager = mp.Manager()
-    log_lock = manager.RLock()
-    
-    # Configure process pool with maxtasksperchild to prevent memory leaks
-    work_pool = mp.Pool(
-        processes=args.threads,
-        maxtasksperchild=100  # Restart workers periodically to prevent memory leaks
-    )
-
-    try:
-        # Process directories
-        directories = [d for d in source_dir.iterdir() if d.is_dir()]
-        params = [(str(d), log_lock, log_files) for d in directories]
-        
-        logger.info(f"Starting scan with {args.threads} threads...")
-        results = work_pool.starmap(thread_fun, params)
-        
-        logger.info(f"Scan completed. Processed {len(results)} directories:")
-        for r in results:
-            logger.info(f"- {r}")
-        
-    except KeyboardInterrupt:
-        logger.info("Received interrupt signal, cleaning up...")
-        work_pool.terminate()
+    except ValueError as e:
+        logger.error(str(e))
+        sys.exit(1)
     except Exception as e:
-        logger.error(f"Error during processing: {e}")
-    finally:
-        work_pool.close()
-        work_pool.join()
-        db.flush_buffer()  # Ensure all phrases are written
-        Mnemonic.free_sources()
+        logger.error(f"Unexpected error: {e}")
+        sys.exit(1)
 
 def signal_handler(signum: int, frame) -> None:
     """Handle interrupt signals gracefully."""

@@ -6,7 +6,7 @@ authors = [
     { name = "Your Name", email = "your.email@example.com" }
 ]
 dependencies = [
-    "bip_utils>=2.7.0",
+    "bip_utils==2.7.0",
     "mnemonic>=0.20",
     "blocksmith>=1.2.0",
     "requests>=2.31.0",
@@ -27,6 +27,18 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = [
+    "src/seed_parser/**/*.py",
+    "src/seed_parser/data/wordlist/*.txt",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/seed_parser"]
+
+[project.scripts]
+seed-parser = "seed_parser.cli:main"
 
 [tool.ruff]
 line-length = 88
@@ -61,9 +73,3 @@ warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
 check_untyped_defs = true
-
-[project.scripts]
-seed-parser = "seed_parser.cli:main"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/seed_parser"]

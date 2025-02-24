@@ -152,59 +152,51 @@ The tool implements comprehensive error handling:
 - Worker process error recovery
 - File encoding detection and fallback
 
+## Error Handling Examples
+
+The tool provides clear error messages for various failure scenarios:
+
+```text
+# Non-existent directory
+$ seed-parser -d /path/does/not/exist
+2024-03-20 10:15:23 - ERROR - Directory does not exist: /path/does/not/exist
+
+# Not a directory
+$ seed-parser -d /path/to/file.txt
+2024-03-20 10:15:24 - ERROR - Path exists but is not a directory: /path/to/file.txt
+
+# No permissions
+$ seed-parser -d /root/protected
+2024-03-20 10:15:25 - ERROR - No read permission for directory: /root/protected
+
+# Empty directory
+$ seed-parser -d /path/to/empty/dir
+2024-03-20 10:15:26 - ERROR - Directory is empty: /path/to/empty/dir
+```
+
+## Usage Examples
+
+The tool handles various edge cases gracefully:
+
+```text
+# Invalid thread count
+$ seed-parser -d /path -t 0
+2024-03-20 10:15:27 - WARNING - Invalid thread count 0, using 1 thread
+2024-03-20 10:15:27 - INFO - Starting scan with 1 thread...
+
+# Too many threads
+$ seed-parser -d /path -t 100
+2024-03-20 10:15:28 - WARNING - Thread count 100 is more than 2x CPU count, limiting to 16 threads
+2024-03-20 10:15:28 - INFO - Starting scan with 16 threads...
+
+# No subdirectories
+$ seed-parser -d /path/single/dir
+2024-03-20 10:15:29 - WARNING - No subdirectories found in /path/single/dir
+2024-03-20 10:15:29 - INFO - Processing directory itself...
+```
+
 ## Development
 
 ### Setting up development environment:
 
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/seed_parser.git
-cd seed_parser
-
-# Create and activate virtual environment
-uv venv
-source .venv/bin/activate
-
-# Install development dependencies
-uv pip install -e ".[dev]"
 ```
-
-### Running tests:
-
-```bash
-pytest tests/
-```
-
-### Code style:
-
-```bash
-# Format code
-ruff format .
-
-# Run linter
-ruff check .
-```
-
-## Contributing
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Make your changes
-4. Run the test suite
-5. Commit your changes (`git commit -m 'Add amazing feature'`)
-6. Push to the branch (`git push origin feature/amazing-feature`)
-7. Open a Pull Request
-
-## License
-
-MIT License - see [LICENSE](LICENSE) file for details
-
-## Acknowledgments
-
-- [python-mnemonic](https://github.com/trezor/python-mnemonic) for BIP39 implementation
-- [bip_utils](https://github.com/ebellocchia/bip_utils) for cryptocurrency address generation
-- [blocksmith](https://github.com/BlockSmith/blocksmith) for Ethereum utilities
-
-## Disclaimer
-
-This tool is for educational and recovery purposes only. Users are responsible for ensuring they have the right to scan any files or directories they process with this tool.
